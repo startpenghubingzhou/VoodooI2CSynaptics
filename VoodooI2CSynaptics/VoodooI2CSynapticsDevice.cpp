@@ -842,7 +842,7 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
     if (!f12.query_base_addr) {
         return 0;
     } else {
-        // IOLog("%s::%s::Found F12 data!\n", getName(), name);
+        IOLog("%s::%s::Found F12 data!\n", getName(), name);
         ret = rmi_read(f12.query_base_addr, &buf1);
         if (ret < 0) {
             IOLog("%s::%s::Failed to read general info register: %d\n", getName(), name, ret);
@@ -965,6 +965,7 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
             f12.data1_offset = data_offset;
             data_offset += item->reg_size;
             max_fingers = item->num_subpackets;
+            max_fingers = 5;
             IOLog("%s::%s::max_fingers: %d\n", getName(), name, max_fingers);
         }
         
@@ -1036,8 +1037,12 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
             data_offset += item->reg_size;
         }
     }
-    if (max_fingers) {
-        max_fingers = 5;
+
+    max_fingers = 5;
+    
+    transducers = OSArray::withCapacity(max_fingers);
+    if (!transducers) {
+        return false;
     }
     
     DigitiserTransducerType type = kDigitiserTransducerFinger;
@@ -1309,27 +1314,14 @@ size_t VoodooI2CSynapticsDevice::rmi_register_desc_calc_size(struct rmi_register
 const struct rmi_register_desc_item *VoodooI2CSynapticsDevice::rmi_get_register_desc_item(struct rmi_register_descriptor *rdesc, uint16_t reg)
 {
     const struct rmi_register_desc_item *item;
-    const struct rmi_register_desc_item *itemret = NULL;
     int i;
-    int map_offset = 0;
-    
-    
-    
-    for (i = 0; i < 8; i++) {
-        bitmap_set(rdesc->presense_map, map_offset, 1);
-        ++map_offset;
-    }
-    
     
     for (i = 0; i < rdesc->num_registers; i++) {
         item = &rdesc->registers[i];
-        if (item->reg == reg){
-            itemret = item;
-            itemret = item;
-        }
+        if (item->reg == reg)
+            return item;
     }
-    
-    return itemret;
+    return NULL;
 }
 
 /* Compute the register offset relative to the base address */
