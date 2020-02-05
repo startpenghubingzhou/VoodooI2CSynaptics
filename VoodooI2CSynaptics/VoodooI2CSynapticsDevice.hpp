@@ -74,6 +74,7 @@ struct rmi_function {
     struct rmi_register_descriptor query_reg_desc;
     struct rmi_register_descriptor control_reg_desc;
     struct rmi_register_descriptor data_reg_desc;
+    uint8_t *data_buf;
     /* F12 Data1 describes sensed objects */
     const struct rmi_register_desc_item *data1;
     uint16_t data1_offset;
@@ -160,6 +161,9 @@ protected:
     const char* name;
     IOWorkLoop* work_loop;
     bool reading;
+    IOLock* client_lock;
+    IOLock* stop_lock;
+    OSArray* clients;
     
 public:
     void stop(IOService* device) override;
@@ -168,7 +172,13 @@ public:
     
     bool init(OSDictionary* properties);
     
+    void free();
+        
     VoodooI2CSynapticsDevice* probe(IOService* provider, SInt32* score);
+    
+    bool open(IOService *forClient, IOOptionBits options = 0, void *arg = 0) override;
+    
+    void close(IOService *forClient, IOOptionBits options) override;
     
     void interruptOccured(OSObject* owner, IOInterruptEventSource* src, int intCount);
     
@@ -196,14 +206,16 @@ public:
     
     void rmi_f11_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data);
     int rmi_f11_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t *rmiInput);
-
+    
+    void rmi_f12_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data);
+    int rmi_f12_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t *rmiInput);
+    
     int rmi_f30_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t irq, uint8_t *rmiInput, int size);
     void TrackpadRawInput(uint8_t report[40]);
     
     bool publish_multitouch_interface();
     void unpublish_multitouch_interface();
     
-    int rmi_f12_read_sensor_tuning();
     size_t rmi_register_desc_calc_size(struct rmi_register_descriptor *rdesc);
     const struct rmi_register_desc_item *rmi_get_register_desc_item(struct rmi_register_descriptor *rdesc, uint16_t reg);
     int rmi_register_desc_calc_reg_offset(struct rmi_register_descriptor *rdesc, uint16_t reg);

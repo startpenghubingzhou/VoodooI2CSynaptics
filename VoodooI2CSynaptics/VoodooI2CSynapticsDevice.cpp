@@ -9,12 +9,74 @@
 
 #include "VoodooI2CSynapticsDevice.hpp"
 #include "Linuxfuncs.hpp"
-#include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
 #include <libkern/zlib.h>
+#include <kern/locks.h>
+#include <sys/proc.h>
+#include <sys/time.h>
 
 #define super IOService
 OSDefineMetaClassAndStructors(VoodooI2CSynapticsDevice, IOService);
+
+void VoodooI2CSynapticsDevice::rmi_f12_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data)
+{
+    int i;
+    int objects = f12.data1->num_subpackets;
+    uint16_t x;
+    uint16_t y;
+    uint8_t z;
+    uint8_t wx;
+    uint8_t wy;
+    
+    VoodooI2CDigitiserTransducer* transducer = OSDynamicCast(VoodooI2CDigitiserTransducer, transducers->getObject(transducer_id));
+    if(!transducer) {
+        IOLog("%s::%s::Failed to cast transducer f11 for id=%d\n", getName(), name, transducer_id);
+        return;
+    }
+    
+    if ((f12.data1->num_subpackets * F12_DATA1_BYTES_PER_OBJ) > f12.report_size)
+        objects = f12.report_size / F12_DATA1_BYTES_PER_OBJ;
+        
+        x = (touch_data[2] << 8) | touch_data[1];
+        y = (touch_data[4] << 8) | touch_data[3];
+        z = touch_data[5];
+        wx = touch_data[6];
+        wy = touch_data[7];
+        
+        y = max_y - y;
+        
+        x *= mt_interface->logical_max_x;
+        x /= mt_interface->physical_max_x;
+        
+        y *= mt_interface->logical_max_y;
+        y /= mt_interface->physical_max_y;
+        
+        transducer->id = transducer_id;
+        transducer->secondary_id = transducer_id;
+        transducer->coordinates.x.update(x, timestamp);
+        transducer->coordinates.y.update(y, timestamp);
+        transducer->coordinates.z.update(z, timestamp);
+        //transducer->tip_pressure.update(z, timestamp);
+        transducer->is_valid = finger_state == 0x01;
+        transducer->tip_switch.update(finger_state == 0x01, timestamp);
+}
+
+int VoodooI2CSynapticsDevice::rmi_f12_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t *rmiInput) {
+    //begin rmi parse
+    int offset;
+    int i;
+    
+    offset = (max_fingers >> 2) + 1;
+    for (i = 0; i < max_fingers; i++) {
+        int fs_byte_position = i >> 2;
+        int fs_bit_position = (i & 0x3) << 1;
+        int finger_state = (rmiInput[fs_byte_position] >> fs_bit_position) &
+        0x03;
+        int position = offset + 5 * i;
+        rmi_f12_process_touch(transducers, i, timestamp, finger_state, &rmiInput[position]);
+    }
+    return f11.report_size;
+}
 
 void VoodooI2CSynapticsDevice::rmi_f11_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data)
 {
@@ -118,13 +180,19 @@ void VoodooI2CSynapticsDevice::TrackpadRawInput(uint8_t report[40]){
     
     clock_get_uptime(&timestamp);
     
-    if (f11.interrupt_base < f30.interrupt_base) {
-        index += rmi_f11_input(transducers, timestamp, &report[index]);
-        index += rmi_f30_input(transducers, timestamp, report[1], &report[index], reportSize - index);
+    IOLog("%s::%s f11 interrupt_base is: %d, f12 interrupt_base is: %d\n", getName(), name, f11.interrupt_base, f12.interrupt_base);
+    
+    if (f11.interrupt_base != NULL){
+        if (f11.interrupt_base < f30.interrupt_base) {
+            index += rmi_f11_input(transducers, timestamp, &report[index]);
+            index += rmi_f30_input(transducers, timestamp, report[1], &report[index], reportSize - index);
+            IOLog("%s::%s Working in f11 mode now!\n", getName(), name);
+        }
     }
-    else {
+    else{
+        index += rmi_f12_input(transducers, timestamp, &report[index]);
         index += rmi_f30_input(transducers, timestamp, report[1], &report[index], reportSize - index);
-        index += rmi_f11_input(transducers, timestamp, &report[index]);
+        IOLog("%s::%s Working in f12 mode now!\n", getName(), name);
     }
     
     if (mt_interface) {
@@ -206,6 +274,16 @@ bool VoodooI2CSynapticsDevice::start(IOService* api) {
     if (!super::start(api))
         return false;
     
+    IOLog("Kishor VoodooI2CSynaptics::lockInit\n");
+    client_lock = IOLockAlloc();
+    stop_lock = IOLockAlloc();
+    IOLog("Kishor VoodooI2CSynaptics::lockInit end\n");
+    clients = OSArray::withCapacity(1);
+    
+    if (!client_lock || !stop_lock || !clients) {
+        return false;
+    }
+
     reading = true;
     
     work_loop = getWorkLoop();
@@ -238,6 +316,7 @@ bool VoodooI2CSynapticsDevice::start(IOService* api) {
     api->joinPMtree(this);
     registerPowerDriver(this, VoodooI2CIOPMPowerStates, kVoodooI2CIOPMNumberPowerStates);
     
+    registerService();
     setProperty("VoodooI2CServices Supported", OSBoolean::withBoolean(true));
     
     publish_multitouch_interface();
@@ -252,7 +331,20 @@ exit:
 }
 
 void VoodooI2CSynapticsDevice::stop(IOService* provider) {
+    IOLockLock(stop_lock);
+    for(;;) {
+        if (!clients->getCount()) {
+            break;
+        }
+        
+        IOLockSleep(stop_lock, &stop_lock, THREAD_UNINT);
+        IOSleep(100);
+    }
+    
+    IOLockUnlock(stop_lock);
+
     releaseResources();
+    OSSafeReleaseNULL(clients);
     PMstop();
     super::stop(provider);
 }
@@ -266,6 +358,44 @@ bool VoodooI2CSynapticsDevice::init(OSDictionary* properties) {
     awake = true;
     
     return true;
+}
+
+void VoodooI2CSynapticsDevice::free() {
+    if (client_lock)
+        IOLockFree(client_lock);
+    
+    if (stop_lock)
+        IOLockFree(stop_lock);
+    
+    super::free();
+}
+
+bool VoodooI2CSynapticsDevice::open(IOService *forClient, IOOptionBits options, void *arg) {
+    IOLockLock(client_lock);
+    clients->setObject(forClient);
+    IOUnlock(client_lock);
+    
+    return super::open(forClient, options, arg);
+}
+
+void VoodooI2CSynapticsDevice::close(IOService *forClient, IOOptionBits options) {
+    IOLockLock(client_lock);
+    
+    for(int i = 0; i < clients->getCount(); i++) {
+        OSObject* service = clients->getObject(i);
+        
+        if (service == forClient) {
+            clients->removeObject(i);
+            break;
+        }
+    }
+    
+    IOUnlock(client_lock);
+    
+    
+    IOLockWakeup(stop_lock, &stop_lock, true);
+    
+    super::close(forClient, options);
 }
 
 int VoodooI2CSynapticsDevice::rmi_read_block(uint16_t addr, uint8_t *buf, const int len) {
@@ -881,6 +1011,7 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
         
         f12.report_size = rmi_register_desc_calc_size(&(f12.data_reg_desc));
         IOLog("%s::%s::F12 data packet size: %zu\n", getName(), name, f12.report_size);
+        f12.data_buf = new uint8_t(f12.report_size);
         
         ret = rmi_read_register_desc(query_addr, &f12.data_reg_desc);
         if (ret) {
@@ -918,6 +1049,9 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
             offset += 4;
         }
         
+        setProperty("Max X", OSNumber::withNumber(max_x, 32));
+        setProperty("Max Y", OSNumber::withNumber(max_y, 32));
+        
         IOLog("%s::%s::max_x is %d and max_y is %d\n", getName(), name, max_x, max_y);
         
         if (rmi_register_desc_has_subpacket(item, 1)) {
@@ -946,6 +1080,9 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
         x_size_mm = (pitch_x * rx_receivers) >> 12;
         y_size_mm = (pitch_y * tx_receivers) >> 12;
         
+        setProperty("X per mm", OSNumber::withNumber(x_size_mm, sizeof(x_size_mm) * 8));
+        setProperty("Y per mm", OSNumber::withNumber(y_size_mm, sizeof(y_size_mm) * 8));
+        
         IOLog("%s::%s::x_size_mm: %d y_size_mm: %d\n", getName(), name, x_size_mm, y_size_mm);
         
        /*
@@ -968,6 +1105,8 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
             max_fingers = 5;
             IOLog("%s::%s::max_fingers: %d\n", getName(), name, max_fingers);
         }
+        
+        setProperty("Max Fingers", OSNumber::withNumber(max_fingers, sizeof(max_fingers) * 8));
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 2);
         if (item && !drvdata->data)
@@ -1037,8 +1176,6 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
             data_offset += item->reg_size;
         }
     }
-
-    max_fingers = 5;
     
     transducers = OSArray::withCapacity(max_fingers);
     if (!transducers) {

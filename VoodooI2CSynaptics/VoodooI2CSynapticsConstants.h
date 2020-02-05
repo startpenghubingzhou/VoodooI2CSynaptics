@@ -94,6 +94,7 @@
  */
 #define RMI_F11_CTRL_REG_COUNT		12
 
+#define F12_DATA1_BYTES_PER_OBJ            8
 
 #define RMI_PAGE(addr) (((addr) >> 8) & 0xff)
 
