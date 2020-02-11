@@ -18,7 +18,7 @@
 #define super IOService
 OSDefineMetaClassAndStructors(VoodooI2CSynapticsDevice, IOService);
 
-void VoodooI2CSynapticsDevice::rmi_f12_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data)
+void VoodooI2CSynapticsDevice::rmi_f12_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t *touch_data)
 {
     int i;
     int objects = f12.data1->num_subpackets;
@@ -30,52 +30,47 @@ void VoodooI2CSynapticsDevice::rmi_f12_process_touch(OSArray* transducers, int t
     
     VoodooI2CDigitiserTransducer* transducer = OSDynamicCast(VoodooI2CDigitiserTransducer, transducers->getObject(transducer_id));
     if(!transducer) {
-        IOLog("%s::%s::Failed to cast transducer f11 for id=%d\n", getName(), name, transducer_id);
+        IOLog("%s::%s::Failed to cast transducer f12 for id=%d\n", getName(), name, transducer_id);
         return;
     }
     
-    if ((f12.data1->num_subpackets * F12_DATA1_BYTES_PER_OBJ) > f12.report_size)
-        objects = f12.report_size / F12_DATA1_BYTES_PER_OBJ;
         
-        x = (touch_data[2] << 8) | touch_data[1];
-        y = (touch_data[4] << 8) | touch_data[3];
-        z = touch_data[5];
-        wx = touch_data[6];
-        wy = touch_data[7];
-        
-        y = max_y - y;
-        
-        x *= mt_interface->logical_max_x;
-        x /= mt_interface->physical_max_x;
-        
-        y *= mt_interface->logical_max_y;
-        y /= mt_interface->physical_max_y;
-        
-        transducer->id = transducer_id;
-        transducer->secondary_id = transducer_id;
-        transducer->coordinates.x.update(x, timestamp);
-        transducer->coordinates.y.update(y, timestamp);
-        transducer->coordinates.z.update(z, timestamp);
-        //transducer->tip_pressure.update(z, timestamp);
-        transducer->is_valid = finger_state == 0x01;
-        transducer->tip_switch.update(finger_state == 0x01, timestamp);
+    x = (touch_data[2] << 8) | touch_data[1];
+    y = (touch_data[4] << 8) | touch_data[3];
+    z = touch_data[5];
+    wx = touch_data[6];
+    wy = touch_data[7];
+    
+    y = max_y - y;
+    
+    x *= mt_interface->logical_max_x;
+    x /= mt_interface->physical_max_x;
+    
+    y *= mt_interface->logical_max_y;
+    y /= mt_interface->physical_max_y;
+    
+    transducer->id = transducer_id;
+    transducer->secondary_id = transducer_id;
+    transducer->coordinates.x.update(x, timestamp);
+    transducer->coordinates.y.update(y, timestamp);
+    transducer->coordinates.z.update(z, timestamp);
+    //transducer->tip_pressure.update(z, timestamp);
+    transducer->is_valid = 0x01;
+    transducer->tip_switch.update(0x01, timestamp);
+    
 }
 
 int VoodooI2CSynapticsDevice::rmi_f12_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t *rmiInput) {
-    //begin rmi parse
+    //begin rmi parse                 
     int offset;
     int i;
     
     offset = (max_fingers >> 2) + 1;
     for (i = 0; i < max_fingers; i++) {
-        int fs_byte_position = i >> 2;
-        int fs_bit_position = (i & 0x3) << 1;
-        int finger_state = (rmiInput[fs_byte_position] >> fs_bit_position) &
-        0x03;
         int position = offset + 5 * i;
-        rmi_f12_process_touch(transducers, i, timestamp, finger_state, &rmiInput[position]);
+        rmi_f12_process_touch(transducers, i, timestamp, &rmiInput[position]);
     }
-    return f11.report_size;
+    return f12.report_size;
 }
 
 void VoodooI2CSynapticsDevice::rmi_f11_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data)
@@ -129,7 +124,7 @@ int VoodooI2CSynapticsDevice::rmi_f11_input(OSArray* transducers, AbsoluteTime t
         int finger_state = (rmiInput[fs_byte_position] >> fs_bit_position) &
         0x03;
         int position = offset + 5 * i;
-        rmi_f11_process_touch(transducers, i, timestamp, finger_state, &rmiInput[position]);
+        rmi_f11_process_touch(transducers, i, timestamp,finger_state, &rmiInput[position]);
     }
     return f11.report_size;
 }
@@ -180,19 +175,15 @@ void VoodooI2CSynapticsDevice::TrackpadRawInput(uint8_t report[40]){
     
     clock_get_uptime(&timestamp);
     
-    IOLog("%s::%s f11 interrupt_base is: %d, f12 interrupt_base is: %d\n", getName(), name, f11.interrupt_base, f12.interrupt_base);
-    
     if (f11.interrupt_base != NULL){
         if (f11.interrupt_base < f30.interrupt_base) {
             index += rmi_f11_input(transducers, timestamp, &report[index]);
             index += rmi_f30_input(transducers, timestamp, report[1], &report[index], reportSize - index);
-            IOLog("%s::%s Working in f11 mode now!\n", getName(), name);
         }
     }
     else{
         index += rmi_f12_input(transducers, timestamp, &report[index]);
         index += rmi_f30_input(transducers, timestamp, report[1], &report[index], reportSize - index);
-        IOLog("%s::%s Working in f12 mode now!\n", getName(), name);
     }
     
     if (mt_interface) {
@@ -268,6 +259,10 @@ void VoodooI2CSynapticsDevice::releaseResources() {
         }
         OSSafeReleaseNULL(transducers);
     }
+    
+    delete[] f12.data_reg_desc.registers;
+    delete[] f12.query_reg_desc.registers;
+    delete[] f12.control_reg_desc.registers;
 }
 
 bool VoodooI2CSynapticsDevice::start(IOService* api) {
@@ -1011,13 +1006,7 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
         
         f12.report_size = rmi_register_desc_calc_size(&(f12.data_reg_desc));
         IOLog("%s::%s::F12 data packet size: %zu\n", getName(), name, f12.report_size);
-        f12.data_buf = new uint8_t(f12.report_size);
-        
-        ret = rmi_read_register_desc(query_addr, &f12.data_reg_desc);
-        if (ret) {
-            IOLog("%s::%s::Failed to read the Data Register Descriptor: %d\n", getName(), name, ret);
-            return ret;
-        }
+
         
         /* Now assuming everything is done, we will try to read sensor tuning data.
          * This step we need to get x_size_mm, y_size_mm and max_fingers
@@ -1093,7 +1082,7 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
          * HID attention reports.
         */
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 0);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 1);
@@ -1109,15 +1098,15 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
         setProperty("Max Fingers", OSNumber::withNumber(max_fingers, sizeof(max_fingers) * 8));
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 2);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 3);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 4);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 5);
@@ -1128,49 +1117,49 @@ int VoodooI2CSynapticsDevice::rmi_populate_f12() {
         }
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 6);
-        if (item && !drvdata->data) {
+        if (item) {
             f12.data6 = item;
             f12.data6_offset = data_offset;
             data_offset += item->reg_size;
         }
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 7);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 8);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 9);
-        if (item && !drvdata->data) {
+        if (item) {
             f12.data9 = item;
             f12.data9_offset = data_offset;
             data_offset += item->reg_size;
         }
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 10);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 11);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 12);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 13);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 14);
-        if (item && !drvdata->data)
+        if (item)
             data_offset += item->reg_size;
         
         item = rmi_get_register_desc_item(&f12.data_reg_desc, 15);
-        if (item && !drvdata->data) {
+        if (item) {
             f12.data15 = item;
             f12.data15_offset = data_offset;
             data_offset += item->reg_size;

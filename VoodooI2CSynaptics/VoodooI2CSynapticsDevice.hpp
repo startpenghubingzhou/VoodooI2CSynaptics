@@ -41,12 +41,6 @@ struct rmi_register_desc_item {
     uint8_t num_subpackets;
     unsigned long subpacket_map[BITS_TO_LONGS(RMI_REG_DESC_SUBPACKET_BITS)];
 };
-
-struct rmi4_attn_data {
-    unsigned long irq_status;
-    size_t size;
-    void *data;
-};
                                                         
 /*
  * describes the packet registers for a particular type
@@ -74,7 +68,7 @@ struct rmi_function {
     struct rmi_register_descriptor query_reg_desc;
     struct rmi_register_descriptor control_reg_desc;
     struct rmi_register_descriptor data_reg_desc;
-    uint8_t *data_buf;
+    
     /* F12 Data1 describes sensed objects */
     const struct rmi_register_desc_item *data1;
     uint16_t data1_offset;
@@ -207,7 +201,7 @@ public:
     void rmi_f11_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data);
     int rmi_f11_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t *rmiInput);
     
-    void rmi_f12_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t finger_state, uint8_t *touch_data);
+    void rmi_f12_process_touch(OSArray* transducers, int transducer_id, AbsoluteTime timestamp, uint8_t *touch_data);
     int rmi_f12_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t *rmiInput);
     
     int rmi_f30_input(OSArray* transducers, AbsoluteTime timestamp, uint8_t irq, uint8_t *rmiInput, int size);
